@@ -14,7 +14,7 @@ app.use(cors({
 app.use(cookieParser());
 app.use(express.json());
 
-const FLASK_SERVER = process.env.FLASK_SERVER || 'http://localhost:5000';
+const FLASK_SERVER = process.env.FLASK_SERVER || 'https://beabcd.pythonanywhere.com';
 const PORT = process.env.PORT || 3000;
 
 const server = http.createServer(app);
