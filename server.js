@@ -8,7 +8,7 @@ const http = require('http');
 
 const app = express();
 
-// Middleware
+// Middlewareee
 app.use(cors());
 app.use(express.json());
 
