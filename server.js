@@ -4,6 +4,8 @@ const WebSocket = require('ws');
 const axios = require('axios');
 
 const app = express();
+app.use(express.json());
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
@@ -35,7 +37,8 @@ wss.on('connection', (ws) => {
                     clients.set(ws, {
                         username: data.username,
                         user_id: data.user_id,
-                        authenticated: true
+                        authenticated: true,
+                        device_id: data.device_id || null
                     });
                     
                     ws.send(JSON.stringify({
@@ -62,12 +65,59 @@ wss.on('connection', (ws) => {
                 const client = clients.get(ws);
                 if (client && client.authenticated) {
                     // Broadcast the message to all clients
-                    broadcast({
+                    const messageData = {
                         type: 'message',
                         username: client.username,
                         content: data.content,
                         timestamp: new Date().toISOString()
-                    });
+                    };
+                    
+                    broadcast(messageData);
+                    
+                    // Send push notification to all users (including offline ones)
+                    try {
+                        await axios.post(`${FLASK_SERVER}/notify-all`, {
+                            sender: client.username,
+                            message: data.content
+                        });
+                        console.log('Notification sent to server');
+                    } catch (error) {
+                        console.error('Error sending notification:', error.message);
+                    }
+                } else {
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: 'Not authenticated'
+                    }));
+                }
+            }
+            // Handle device ID update
+            else if (data.type === 'update_device') {
+                const client = clients.get(ws);
+                if (client && client.authenticated) {
+                    // Update device ID in Flask server
+                    try {
+                        await axios.post(`${FLASK_SERVER}/update-device`, {
+                            user_id: client.user_id,
+                            device_id: data.device_id
+                        });
+                        
+                        // Update local client info
+                        client.device_id = data.device_id;
+                        clients.set(ws, client);
+                        
+                        ws.send(JSON.stringify({
+                            type: 'device_update_response',
+                            success: true,
+                            message: 'Device ID updated successfully'
+                        }));
+                    } catch (error) {
+                        ws.send(JSON.stringify({
+                            type: 'device_update_response',
+                            success: false,
+                            message: 'Failed to update device ID'
+                        }));
+                    }
                 } else {
                     ws.send(JSON.stringify({
                         type: 'error',
@@ -114,6 +164,54 @@ function broadcast(message, exclude = null) {
 // Simple health check endpoint
 app.get('/health', (req, res) => {
     res.json({ status: 'OK', connections: clients.size });
+});
+
+// Endpoint to send a direct message to a specific user
+app.post('/send-direct', async (req, res) => {
+    const { username, message, sender } = req.body;
+    
+    if (!username || !message || !sender) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'Missing username, message, or sender' 
+        });
+    }
+    
+    let delivered = false;
+    
+    // Try to deliver to connected client
+    for (const [ws, client] of clients.entries()) {
+        if (client.username === username && client.authenticated) {
+            ws.send(JSON.stringify({
+                type: 'direct_message',
+                sender: sender,
+                content: message,
+                timestamp: new Date().toISOString()
+            }));
+            delivered = true;
+            break;
+        }
+    }
+    
+    // If not delivered via WebSocket, send via Flask notification system
+    if (!delivered) {
+        try {
+            await axios.post(`${FLASK_SERVER}/notify-all`, {
+                sender: sender,
+                message: message,
+                target_username: username
+            });
+            delivered = true;
+        } catch (error) {
+            console.error('Error sending notification:', error.message);
+        }
+    }
+    
+    return res.json({
+        success: true,
+        delivered: delivered,
+        message: delivered ? 'Message delivered' : 'Message queued for delivery'
+    });
 });
 
 // Start the server
