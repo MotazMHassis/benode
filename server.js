@@ -1,33 +1,35 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const WebSocket = require('ws');
 const axios = require('axios');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const http = require('http');
 
 const app = express();
 
-// Middlewareee
+// Middleware
 app.use(cors());
 app.use(express.json());
 
 // Configuration
 const FLASK_SERVER = process.env.FLASK_SERVER || 'https://beabcd.pythonanywhere.com';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-strong-secret-key-here';
+const PORT = process.env.PORT || 3000;
 
-// Create HTTP server (HTTPS is handled by your hosting provider)
+// Create HTTP server
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // Connected clients
 const clients = new Map();
 
-// Helper function to verify tokens
+// Helper function to verify JWT tokens
 const verifyToken = (token) => {
   try {
     return jwt.verify(token, JWT_SECRET);
   } catch (err) {
+    console.error('JWT verification error:', err.message);
     return null;
   }
 };
@@ -43,7 +45,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// User registration (proxied to Flask)
+// Proxy registration to Flask
 app.post('/register', async (req, res) => {
   try {
     const response = await axios.post(`${FLASK_SERVER}/register`, req.body);
@@ -54,37 +56,11 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// User login (proxied to Flask)
+// Proxy login to Flask
 app.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
-    
-    // Verify with Flask server
-    const response = await axios.post(`${FLASK_SERVER}/login`, {
-      username,
-      password
-    });
-
-    if (response.data.success) {
-      // Create JWT token
-      const token = jwt.sign(
-        { 
-          userId: response.data.user_id, 
-          username: response.data.username 
-        },
-        JWT_SECRET,
-        { expiresIn: '24h' }
-      );
-
-      res.json({
-        success: true,
-        user_id: response.data.user_id,
-        username: response.data.username,
-        token
-      });
-    } else {
-      res.status(401).json(response.data);
-    }
+    const response = await axios.post(`${FLASK_SERVER}/login`, req.body);
+    res.status(response.status).json(response.data);
   } catch (error) {
     res.status(error.response?.status || 500)
        .json(error.response?.data || { error: 'Login failed' });
@@ -95,21 +71,17 @@ app.post('/login', async (req, res) => {
 wss.on('connection', (ws, req) => {
   console.log('New client connected');
 
-  // Extract IP for logging (useful for rate limiting)
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  console.log(`Connection from IP: ${ip}`);
-
   ws.on('message', async (message) => {
     try {
       const data = JSON.parse(message);
       
       // Authentication
       if (data.type === 'auth') {
-        const { token, user_id, username } = data;
+        const { token } = data;
         
         // Verify JWT token
         const decoded = verifyToken(token);
-        if (!decoded || decoded.userId !== user_id) {
+        if (!decoded) {
           ws.send(JSON.stringify({
             type: 'auth_response',
             success: false,
@@ -120,32 +92,30 @@ wss.on('connection', (ws, req) => {
 
         // Verify with Flask server
         try {
-          const response = await axios.post(`${FLASK_SERVER}/verify_user`, {
-            user_id,
-            username
-          }, {
-            headers: { Authorization: `Bearer ${token}` }
+          const response = await axios.post(`${FLASK_SERVER}/verify`, {
+            token: token
           });
 
           if (response.data.valid) {
             clients.set(ws, {
-              userId: user_id,
-              username,
-              authenticated: true,
-              ip
+              userId: decoded.user_id,
+              username: decoded.username,
+              authenticated: true
             });
 
             ws.send(JSON.stringify({
               type: 'auth_response',
               success: true,
-              message: 'Authentication successful'
+              message: 'Authentication successful',
+              user_id: decoded.user_id,
+              username: decoded.username
             }));
 
             // Broadcast user joined
             broadcast({
               type: 'user_joined',
-              userId,
-              username,
+              userId: decoded.user_id,
+              username: decoded.username,
               timestamp: new Date().toISOString()
             }, ws);
           } else {
@@ -164,7 +134,7 @@ wss.on('connection', (ws, req) => {
           }));
         }
       }
-      // Chat messages
+      // Handle chat messages
       else if (data.type === 'message') {
         const client = clients.get(ws);
         if (client?.authenticated) {
@@ -229,7 +199,6 @@ function broadcast(message, exclude = null) {
 }
 
 // Start server
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`WebSocket endpoint: ws://localhost:${PORT}`);
