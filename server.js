@@ -8,7 +8,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // Flask server URL
-const FLASK_SERVER = 'http://localhost:5000';
+const FLASK_SERVER = 'https://beabcd.pythonanywhere.com';
 
 // Connected clients with their user info
 const clients = new Map();
