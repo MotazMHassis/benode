@@ -1,104 +1,123 @@
-require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const axios = require('axios');
-const cors = require('cors');
-const cookieParser = require('cookie-parser');
 
 const app = express();
-app.use(cors({
-  origin: true,
-  credentials: true
-}));
-app.use(cookieParser());
-app.use(express.json());
-
-const FLASK_SERVER = process.env.FLASK_SERVER || 'https://beabcd.pythonanywhere.com';
-const PORT = process.env.PORT || 3000;
-
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server, clientTracking: true });
+const wss = new WebSocket.Server({ server });
 
+// Flask server URL
+const FLASK_SERVER = 'http://localhost:5000';
+
+// Connected clients with their user info
 const clients = new Map();
 
-// HTTP endpoints
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', connections: clients.size });
-});
-
-// WebSocket connection
-wss.on('connection', (ws, req) => {
-  console.log('New connection');
-  
-  ws.on('message', async (message) => {
-    try {
-      const data = JSON.parse(message);
-      
-      if (data.type === 'auth') {
-        const { user_id, username } = data;
-        
+// WebSocket server
+wss.on('connection', (ws) => {
+    console.log('Client connected');
+    
+    // Handle messages from clients
+    ws.on('message', async (message) => {
         try {
-          const response = await axios.post(`${FLASK_SERVER}/verify`, {}, {
-            headers: { Cookie: req.headers.cookie }
-          });
-          
-          if (response.data.valid && response.data.user_id == user_id) {
-            clients.set(ws, { 
-              userId: user_id,
-              username: username,
-              authenticated: true
+            const data = JSON.parse(message);
+            
+            // Handle authentication
+            if (data.type === 'auth') {
+                // Verify with Flask server
+                const response = await axios.post(`${FLASK_SERVER}/verify`, {
+                    username: data.username,
+                    user_id: data.user_id
+                });
+                
+                if (response.data.valid) {
+                    // Store user info with this connection
+                    clients.set(ws, {
+                        username: data.username,
+                        user_id: data.user_id,
+                        authenticated: true
+                    });
+                    
+                    ws.send(JSON.stringify({
+                        type: 'auth_response',
+                        success: true,
+                        message: 'Authentication successful'
+                    }));
+                    
+                    // Broadcast user joined to all clients
+                    broadcast({
+                        type: 'user_joined',
+                        username: data.username
+                    }, ws);
+                } else {
+                    ws.send(JSON.stringify({
+                        type: 'auth_response',
+                        success: false,
+                        message: 'Invalid credentials'
+                    }));
+                }
+            }
+            // Handle chat message
+            else if (data.type === 'message') {
+                const client = clients.get(ws);
+                if (client && client.authenticated) {
+                    // Broadcast the message to all clients
+                    broadcast({
+                        type: 'message',
+                        username: client.username,
+                        content: data.content,
+                        timestamp: new Date().toISOString()
+                    });
+                } else {
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: 'Not authenticated'
+                    }));
+                }
+            }
+        } catch (error) {
+            console.error('Error processing message:', error);
+            ws.send(JSON.stringify({
+                type: 'error',
+                message: 'Invalid message format'
+            }));
+        }
+    });
+    
+    // Handle client disconnect
+    ws.on('close', () => {
+        const client = clients.get(ws);
+        if (client) {
+            // Broadcast user left
+            broadcast({
+                type: 'user_left',
+                username: client.username
             });
             
-            ws.send(JSON.stringify({
-              type: 'auth_response',
-              success: true,
-              user_id,
-              username
-            }));
-          } else {
-            throw new Error('Invalid session');
-          }
-        } catch (err) {
-          ws.send(JSON.stringify({
-            type: 'auth_response',
-            success: false,
-            message: 'Authentication failed'
-          }));
-          ws.close();
+            // Remove client from map
+            clients.delete(ws);
         }
-      }
-      
-      else if (data.type === 'message') {
-        const client = clients.get(ws);
-        if (client?.authenticated) {
-          broadcast({
-            type: 'message',
-            userId: client.userId,
-            username: client.username,
-            content: data.content,
-            timestamp: new Date().toISOString()
-          }, ws);
-        }
-      }
-    } catch (err) {
-      console.error('WS error:', err);
-    }
-  });
-
-  ws.on('close', () => {
-    clients.delete(ws);
-  });
+        console.log('Client disconnected');
+    });
 });
 
-function broadcast(data, exclude = null) {
-  wss.clients.forEach(client => {
-    if (client !== exclude && client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
-    }
-  });
+// Function to broadcast to all connected clients
+function broadcast(message, exclude = null) {
+    const messageStr = JSON.stringify(message);
+    wss.clients.forEach((client) => {
+        if (client !== exclude && client.readyState === WebSocket.OPEN) {
+            client.send(messageStr);
+        }
+    });
 }
 
+// Simple health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'OK', connections: clients.size });
+});
+
+// Start the server
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    console.log(`WebSocket server running on port ${PORT}`);
 });
