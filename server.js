@@ -7,15 +7,27 @@ const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
+
+// Enhanced CORS configuration
+const corsOptions = {
+  origin: '*', // Allow all origins
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
+app.use(bodyParser.json());
+
+// Configure Socket.IO with broader CORS settings
 const io = socketIo(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"]
-  }
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true
+  },
+  transports: ['websocket', 'polling']
 });
-
-app.use(cors());
-app.use(bodyParser.json());
 
 // Store connected clients
 const connectedClients = new Map();
@@ -71,8 +83,14 @@ app.post('/broadcast', (req, res) => {
 app.get('/status', (req, res) => {
   res.status(200).json({ 
     status: 'online',
-    connectedClients: connectedClients.size
+    connectedClients: connectedClients.size,
+    version: '1.0.1'
   });
+});
+
+// Add a root path handler for basic health check
+app.get('/', (req, res) => {
+  res.status(200).send('Push Notification Server is running');
 });
 
 const PORT = process.env.PORT || 3000;
