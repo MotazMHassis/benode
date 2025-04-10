@@ -4,104 +4,154 @@ const http = require('http');
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
-const users = new Map(); // username -> WebSocket
 
-console.log('Server initialization started');
+// Store active connections and offline messages
+const activeConnections = new Map();
+const offlineMessages = new Map();
+const MESSAGE_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
+
+// Middleware for JSON parsing
+app.use(express.json());
 
 // REST endpoint to get all users
 app.get('/users', (req, res) => {
-  console.log(`GET /users request received - current users: ${Array.from(users.keys())}`);
-  res.json(Array.from(users.keys()));
+  res.json(Array.from(activeConnections.keys()));
 });
 
-// WebSocket connection
+// Endpoint to check if user is online
+app.get('/user/:username/status', (req, res) => {
+  const isOnline = activeConnections.has(req.params.username);
+  res.json({ online: isOnline });
+});
+
+// WebSocket connection handler
 wss.on('connection', (ws, req) => {
-  console.log(`New WebSocket connection attempt from: ${req.headers.host}`);
-  
   const username = new URL(req.url, `https://${req.headers.host}`).searchParams.get('username');
   
   if (!username) {
-    console.log('Connection rejected: Missing username parameter');
-    ws.close();
+    ws.close(4001, 'Username required');
     return;
   }
-  
-  console.log(`User connected: ${username}`);
-  
-  // Add user to the map
-  users.set(username, ws);
-  console.log(`Current user count: ${users.size}`);
+
+  // Close any existing connection for this user
+  if (activeConnections.has(username)) {
+    activeConnections.get(username).close(4002, 'Duplicate connection');
+  }
+
+  // Add new connection
+  activeConnections.set(username, ws);
   broadcastUserList();
-  
-  // Handle messages
-  ws.on('message', (message) => {
-    console.log(`Message received from ${username}: ${message}`);
+
+  // Send queued messages if any
+  if (offlineMessages.has(username)) {
+    const messages = offlineMessages.get(username).filter(msg => 
+      Date.now() - msg.timestamp < MESSAGE_EXPIRY
+    );
     
+    messages.forEach(msg => {
+      ws.send(JSON.stringify(msg));
+    });
+
+    // Remove delivered messages
+    offlineMessages.set(username, 
+      offlineMessages.get(username).filter(msg => 
+        Date.now() - msg.timestamp >= MESSAGE_EXPIRY
+      )
+    );
+    
+    if (offlineMessages.get(username).length === 0) {
+      offlineMessages.delete(username);
+    }
+  }
+
+  // Message handler
+  ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
       
+      // Handle ping messages
+      if (data.type === 'ping') {
+        return;
+      }
+      
+      // Handle regular messages
       if (data.type === 'message' && data.receiver && data.content) {
-        console.log(`Message from ${username} to ${data.receiver}: ${data.content}`);
-        
-        const receiverWs = users.get(data.receiver);
-        if (receiverWs) {
-          console.log(`Forwarding message to ${data.receiver}`);
-          receiverWs.send(JSON.stringify({
-            type: 'message',
-            sender: username,
-            receiver: data.receiver,
-            content: data.content
-          }));
+        const messageData = {
+          type: 'message',
+          sender: username,
+          receiver: data.receiver,
+          content: data.content,
+          timestamp: Date.now()
+        };
+
+        // Check if recipient is online
+        if (activeConnections.has(data.receiver)) {
+          activeConnections.get(data.receiver).send(JSON.stringify(messageData));
         } else {
-          console.log(`Failed to forward message: Receiver ${data.receiver} not found`);
+          // Store for offline user
+          if (!offlineMessages.has(data.receiver)) {
+            offlineMessages.set(data.receiver, []);
+          }
+          offlineMessages.get(data.receiver).push(messageData);
         }
-      } else {
-        console.log(`Invalid message format from ${username}:`, data);
       }
     } catch (err) {
-      console.error(`Error processing message from ${username}:`, err);
+      console.error('Error processing message:', err);
     }
   });
-  
-  // Handle disconnection
+
+  // Connection closed handler
   ws.on('close', () => {
-    console.log(`User disconnected: ${username}`);
-    users.delete(username);
-    console.log(`Current user count: ${users.size}`);
-    broadcastUserList();
+    if (activeConnections.get(username) === ws) {
+      activeConnections.delete(username);
+      broadcastUserList();
+    }
   });
-  
-  // Handle errors
+
+  // Error handler
   ws.on('error', (error) => {
-    console.error(`WebSocket error for user ${username}:`, error);
+    console.error('WebSocket error:', error);
+    if (activeConnections.get(username) === ws) {
+      activeConnections.delete(username);
+      broadcastUserList();
+    }
   });
 });
 
+// Broadcast updated user list to all clients
 function broadcastUserList() {
-  const userList = Array.from(users.keys());
-  console.log(`Broadcasting updated user list: ${userList.join(', ')}`);
-  
+  const userList = Array.from(activeConnections.keys());
   const message = JSON.stringify({
     type: 'user_update',
     users: userList
   });
-  
-  let successCount = 0;
-  users.forEach((ws, username) => {
+
+  activeConnections.forEach((ws, username) => {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(message);
-      successCount++;
-    } else {
-      console.log(`Skipping broadcast to ${username}: WebSocket not open (state: ${ws.readyState})`);
+      try {
+        ws.send(message);
+      } catch (err) {
+        console.error('Error broadcasting to user', username, err);
+      }
     }
   });
-  
-  console.log(`User list broadcast complete: ${successCount}/${users.size} active connections received the update`);
 }
 
+// Cleanup expired messages periodically
+setInterval(() => {
+  const now = Date.now();
+  offlineMessages.forEach((messages, username) => {
+    const validMessages = messages.filter(msg => now - msg.timestamp < MESSAGE_EXPIRY);
+    if (validMessages.length > 0) {
+      offlineMessages.set(username, validMessages);
+    } else {
+      offlineMessages.delete(username);
+    }
+  });
+}, 60 * 60 * 1000); // Run hourly
+
+// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server started and running on port ${PORT}`);
-  console.log(`WebSocket server available at ws://localhost:${PORT}`);
-  console.log(`REST endpoint available at http://localhost:${PORT}/users`);
+  console.log(`Server started on port ${PORT}`);
 });
