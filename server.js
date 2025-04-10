@@ -65,40 +65,49 @@ wss.on('connection', (ws, req) => {
   }
 
   // Message handler
-  ws.on('message', (message) => {
+ws.on('message', (message) => {
     try {
-      const data = JSON.parse(message);
-      
-      // Handle ping messages
-      if (data.type === 'ping') {
-        return;
-      }
-      
-      // Handle regular messages
-      if (data.type === 'message' && data.receiver && data.content) {
-        const messageData = {
-          type: 'message',
-          sender: username,
-          receiver: data.receiver,
-          content: data.content,
-          timestamp: Date.now()
-        };
-
-        // Check if recipient is online
-        if (activeConnections.has(data.receiver)) {
-          activeConnections.get(data.receiver).send(JSON.stringify(messageData));
-        } else {
-          // Store for offline user
-          if (!offlineMessages.has(data.receiver)) {
-            offlineMessages.set(data.receiver, []);
-          }
-          offlineMessages.get(data.receiver).push(messageData);
+        const data = JSON.parse(message);
+        
+        // Handle ping messages silently
+        if (data.type === 'ping') {
+            return;
         }
-      }
+        
+        // Validate message structure
+        if (data.type === 'message' && data.receiver && data.content) {
+            const receiverWs = activeConnections.get(data.receiver);
+            const messageData = {
+                type: 'message',
+                sender: username,
+                receiver: data.receiver,
+                content: data.content,
+                timestamp: Date.now()
+            };
+
+            if (receiverWs) {
+                // Only send if connection is open
+                if (receiverWs.readyState === WebSocket.OPEN) {
+                    receiverWs.send(JSON.stringify(messageData));
+                } else {
+                    // Store message if connection exists but isn't open
+                    if (!offlineMessages.has(data.receiver)) {
+                        offlineMessages.set(data.receiver, []);
+                    }
+                    offlineMessages.get(data.receiver).push(messageData);
+                }
+            } else {
+                // Store for offline user
+                if (!offlineMessages.has(data.receiver)) {
+                    offlineMessages.set(data.receiver, []);
+                }
+                offlineMessages.get(data.receiver).push(messageData);
+            }
+        }
     } catch (err) {
-      console.error('Error processing message:', err);
+        console.error('Error processing message:', err);
     }
-  });
+});
 
   // Connection closed handler
   ws.on('close', () => {
