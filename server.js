@@ -37,16 +37,19 @@ console.log(`[SERVER] Static files served from: ${path.join(__dirname, 'public')
 
 // REST Endpoints
 app.get('/api/users', (req, res) => {
-  const onlineUsers = Array.from(activeConnections.keys());
-  const offlineUsers = Array.from(userStatus.keys())
-    .filter(user => !activeConnections.has(user));
+  const users = Array.from(activeConnections.keys());
   
-  console.log(`[API] GET /api/users - Online: ${onlineUsers.length}, Offline: ${offlineUsers.length}`);
+  console.log(`[API] GET /api/users - Returning ${users.length} active users`);
   
-  res.json({
-    online: onlineUsers,
-    offline: offlineUsers
-  });
+  res.json(users);
+});
+
+app.get('/users', (req, res) => {
+  const users = Array.from(activeConnections.keys());
+  
+  console.log(`[API] GET /users - Returning ${users.length} active users`);
+  
+  res.json(users);
 });
 
 app.get('/api/user/:username/status', (req, res) => {
