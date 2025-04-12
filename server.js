@@ -35,9 +35,9 @@ const connectedClients = new Map();
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
   
-  socket.on('register', (deviceToken) => {
-    console.log('Device registered:', deviceToken);
-    connectedClients.set(deviceToken, socket.id);
+  socket.on('register', () => {
+    console.log('Device registered:', socket.id);
+    connectedClients.set(socket.id);
     
     // Send acknowledgment back to the client
     socket.emit('registration_success', { message: 'Successfully registered for notifications' });
@@ -46,13 +46,6 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
     
-    // Remove the disconnected client from our map
-    for (const [deviceToken, socketId] of connectedClients.entries()) {
-      if (socketId === socket.id) {
-        connectedClients.delete(deviceToken);
-        break;
-      }
-    }
   });
 });
 
